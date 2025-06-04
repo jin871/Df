@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>オンライン大富豪（4人対戦・AI自動追加・特殊ルール付き）</title>
+  <title>オンライン大富豪（4人対戦・ルーム作成/参加・手札枚数表示）</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: auto; }
     #handArea span { padding: 5px; margin: 2px; border: 1px solid black; cursor: pointer; }
@@ -10,23 +10,30 @@
     #fieldArea { margin: 20px 0; }
     #fieldArea span { padding: 5px; margin: 2px; border: 1px solid blue; }
     #log { height: 150px; overflow-y: auto; background: #f0f0f0; padding: 10px; }
+    #playerStatus { margin: 10px 0; }
     button { padding: 10px 20px; margin: 5px; }
     #gameArea { display: none; }
+    #lobbyArea { margin: 20px 0; }
   </style>
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
 </head>
 <body>
   <h1>オンライン大富豪（4人対戦）</h1>
-  <div>
+  <div id="lobbyArea">
     <label>プレイヤー名: <input type="text" id="playerName" /></label>
-    <button id="joinBtn">参加</button>
+    <br />
+    <label>ルームID（参加する場合）: <input type="text" id="roomIdInput" placeholder="空なら新規作成" /></label>
+    <br />
+    <button id="joinBtn">ルームに参加/作成</button>
   </div>
   <div id="gameArea">
     <h2>手札</h2>
     <div id="handArea"></div>
     <h2>場のカード</h2>
     <div id="fieldArea"></div>
+    <h2>プレイヤー状況</h2>
+    <div id="playerStatus"></div>
     <button id="playButton">出す</button>
     <button id="passButton">パス</button>
     <h3>ログ</h3>
@@ -47,11 +54,7 @@
 
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
-    const roomId = "room1";
-    const roomRef = db.ref(`rooms/${roomId}`);
-
-    const suits = ["♠", "♣", "♦", "♥"];
-    const rankOrder = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2"];
+    let roomRef = null;
     let myName = null;
     let playerHands = {};
     let currentFieldCards = [];
@@ -62,6 +65,9 @@
     let passedPlayers = [];
     let selectedIndices = [];
     let botNames = [];
+
+    const suits = ["♠", "♣", "♦", "♥"];
+    const rankOrder = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2"];
 
     // ユーティリティ
     function log(text) {
@@ -160,9 +166,7 @@
         }
       }
 
-
-
-    // 50%の確率でパス
+      // 50%の確率でパス
       if (Math.random() < 0.5 && currentFieldCards.length > 0) {
         log(`${playerName} がパスしました`);
         const newPassedPlayers = [...passedPlayers, playerName];
@@ -180,7 +184,7 @@
         return;
       }
 
-      // 有効なカードがある場合
+    // 有効なカードがある場合
       if (validCards.length > 0) {
         const newHand = hand.filter(card => !validCards.includes(card));
         const updates = {
@@ -241,8 +245,6 @@
       });
     }
 
-
-
     function displayField(fieldCards) {
       const fieldArea = document.getElementById("fieldArea");
       fieldArea.innerHTML = fieldCards.length === 0 ? "(場は空)" : "";
@@ -250,6 +252,18 @@
         const span = document.createElement("span");
         span.textContent = cardToText(card);
         fieldArea.appendChild(span);
+      });
+    }
+
+    // プレイヤーの手札枚数を表示
+    function displayPlayerStatus() {
+      const statusArea = document.getElementById("playerStatus");
+      statusArea.innerHTML = "";
+      turnOrder.forEach(player => {
+        const count = playerHands[player] ? playerHands[player].length : 0;
+        const div = document.createElement("div");
+        div.textContent = `${player}: ${count}枚`;
+        statusArea.appendChild(div);
       });
     }
 
@@ -263,6 +277,7 @@
       passedPlayers = room.passedPlayers || [];
       displayHand();
       displayField(currentFieldCards);
+      displayPlayerStatus();
       document.getElementById("playButton").disabled = turnOrder[currentTurnIndex] !== myName;
       document.getElementById("passButton").disabled = turnOrder[currentTurnIndex] !== myName;
       log(`現在のターン: ${turnOrder[currentTurnIndex] || "なし"}`);
@@ -280,6 +295,10 @@
         alert("プレイヤー名を入力してください");
         return;
       }
+      const roomIdInput = document.getElementById("roomIdInput").value.trim();
+      const roomId = roomIdInput || Math.random().toString(36).substring(2, 10); // ランダムID生成
+      roomRef = db.ref(`rooms/${roomId}`);
+
       roomRef.child("players").transaction(players => {
         players = players || [];
         if (players.length >= 4) {
@@ -288,6 +307,13 @@
         if (!players.includes(myName)) {
           players.push(myName);
         }
+        return players;
+      }, (error, committed, snapshot) => {
+        if (error || !committed) {
+          alert("参加できませんでした: " + (error ? error.message : "ルームが満員です"));
+          return;
+        }
+        const players = snapshot.val();
         // 4人に満たない場合、ボットを追加
         const botCount = 4 - players.length;
         botNames = Array.from({ length: botCount }, (_, i) => `Bot${i + 1}`);
@@ -297,17 +323,11 @@
             players.push(botName);
           }
         }
-        return players;
-      }, (error, committed, snapshot) => {
-        if (error || !committed) {
-          alert("参加できませんでした: " + (error ? error.message : "ルームが満員です"));
-          return;
-        }
-        // ルームをリセットしてゲーム開始
+        // ルームを初期化してゲーム開始
         roomRef.set({
-          players: snapshot.val(),
-          hands: dealCards(snapshot.val()),
-          turnOrder: snapshot.val(),
+          players: players,
+          hands: dealCards(players),
+          turnOrder: players,
           currentTurnIndex: 0,
           fieldCards: [],
           revolution: false,
@@ -315,16 +335,15 @@
           passedPlayers: []
         }).then(() => {
           document.getElementById("gameArea").style.display = "block";
-          document.getElementById("joinBtn").disabled = true;
-          document.getElementById("playerName").disabled = true;
-          log(`${myName} が参加しました。プレイヤー: ${snapshot.val().join(", ")}`);
+          document.getElementById("lobbyArea").style.display = "none";
+          log(`ルームID: ${roomId}`);
+          log(`${myName} が参加しました。プレイヤー: ${players.join(", ")}`);
           log("ゲーム開始！カードを配りました");
         }).catch(error => {
           alert("ゲームの開始に失敗しました: " + error.message);
         });
       });
     };
-
 
     document.getElementById("playButton").onclick = () => {
       if (turnOrder[currentTurnIndex] !== myName) return;
@@ -380,3 +399,4 @@
   </script>
 </body>
 </html>
+                                   }
