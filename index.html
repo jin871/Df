@@ -160,8 +160,7 @@
         }
       }
 
-
-    // 50%の確率でパス
+      // 50%の確率でパス
       if (Math.random() < 0.5 && currentFieldCards.length > 0) {
         log(`${playerName} がパスしました`);
         const newPassedPlayers = [...passedPlayers, playerName];
@@ -277,29 +276,26 @@
         alert("プレイヤー名を入力してください");
         return;
       }
-      roomRef.child("players").once("value", snapshot => {
-        const players = snapshot.val() || [];
-        if (players.length > 0) {
-          alert("ゲームはすでに開始されています");
-          return;
-        }
-        const botName = "Bot1";
-        roomRef.update({
-          players: [myName, botName],
-          hands: dealCards([myName, botName]),
-          turnOrder: [myName, botName],
-          currentTurnIndex: 0,
-          fieldCards: [],
-          revolution: false,
-          sevenPassActive: false,
-          passedPlayers: []
-        });
-        botNames = [botName];
+      // ルームをリセットして新しいゲームを開始
+      const botName = "Bot1";
+      roomRef.set({
+        players: [myName, botName],
+        hands: dealCards([myName, botName]),
+        turnOrder: [myName, botName],
+        currentTurnIndex: 0,
+        fieldCards: [],
+        revolution: false,
+        sevenPassActive: false,
+        passedPlayers: []
+      }).then(() => {
+         botNames = [botName];
         document.getElementById("gameArea").style.display = "block";
         document.getElementById("joinBtn").disabled = true;
         document.getElementById("playerName").disabled = true;
         log(`${myName} と ${botName} が参加しました`);
         log("ゲーム開始！カードを配りました");
+      }).catch(error => {
+        alert("ゲームの開始に失敗しました: " + error.message);
       });
     };
 
