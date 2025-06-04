@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>オンライン大富豪（2人対戦・特殊ルール付き）</title>
+  <title>オンライン大富豪（4人対戦・AI自動追加・特殊ルール付き）</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: auto; }
     #handArea span { padding: 5px; margin: 2px; border: 1px solid black; cursor: pointer; }
@@ -17,7 +17,7 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
 </head>
 <body>
-  <h1>オンライン大富豪（2人対戦）</h1>
+  <h1>オンライン大富豪（4人対戦）</h1>
   <div>
     <label>プレイヤー名: <input type="text" id="playerName" /></label>
     <button id="joinBtn">参加</button>
@@ -61,7 +61,7 @@
     let currentTurnIndex = 0;
     let passedPlayers = [];
     let selectedIndices = [];
-    let botNames = ["Bot1"];
+    let botNames = [];
 
     // ユーティリティ
     function log(text) {
@@ -160,7 +160,9 @@
         }
       }
 
-      // 50%の確率でパス
+
+
+    // 50%の確率でパス
       if (Math.random() < 0.5 && currentFieldCards.length > 0) {
         log(`${playerName} がパスしました`);
         const newPassedPlayers = [...passedPlayers, playerName];
@@ -239,6 +241,8 @@
       });
     }
 
+
+
     function displayField(fieldCards) {
       const fieldArea = document.getElementById("fieldArea");
       fieldArea.innerHTML = fieldCards.length === 0 ? "(場は空)" : "";
@@ -276,28 +280,51 @@
         alert("プレイヤー名を入力してください");
         return;
       }
-      // ルームをリセットして新しいゲームを開始
-      const botName = "Bot1";
-      roomRef.set({
-        players: [myName, botName],
-        hands: dealCards([myName, botName]),
-        turnOrder: [myName, botName],
-        currentTurnIndex: 0,
-        fieldCards: [],
-        revolution: false,
-        sevenPassActive: false,
-        passedPlayers: []
-      }).then(() => {
-         botNames = [botName];
-        document.getElementById("gameArea").style.display = "block";
-        document.getElementById("joinBtn").disabled = true;
-        document.getElementById("playerName").disabled = true;
-        log(`${myName} と ${botName} が参加しました`);
-        log("ゲーム開始！カードを配りました");
-      }).catch(error => {
-        alert("ゲームの開始に失敗しました: " + error.message);
+      roomRef.child("players").transaction(players => {
+        players = players || [];
+        if (players.length >= 4) {
+          return; // 4人以上なら追加しない
+        }
+        if (!players.includes(myName)) {
+          players.push(myName);
+        }
+        // 4人に満たない場合、ボットを追加
+        const botCount = 4 - players.length;
+        botNames = Array.from({ length: botCount }, (_, i) => `Bot${i + 1}`);
+        while (players.length < 4) {
+          const botName = `Bot${players.length}`;
+          if (!players.includes(botName)) {
+            players.push(botName);
+          }
+        }
+        return players;
+      }, (error, committed, snapshot) => {
+        if (error || !committed) {
+          alert("参加できませんでした: " + (error ? error.message : "ルームが満員です"));
+          return;
+        }
+        // ルームをリセットしてゲーム開始
+        roomRef.set({
+          players: snapshot.val(),
+          hands: dealCards(snapshot.val()),
+          turnOrder: snapshot.val(),
+          currentTurnIndex: 0,
+          fieldCards: [],
+          revolution: false,
+          sevenPassActive: false,
+          passedPlayers: []
+        }).then(() => {
+          document.getElementById("gameArea").style.display = "block";
+          document.getElementById("joinBtn").disabled = true;
+          document.getElementById("playerName").disabled = true;
+          log(`${myName} が参加しました。プレイヤー: ${snapshot.val().join(", ")}`);
+          log("ゲーム開始！カードを配りました");
+        }).catch(error => {
+          alert("ゲームの開始に失敗しました: " + error.message);
+        });
       });
     };
+
 
     document.getElementById("playButton").onclick = () => {
       if (turnOrder[currentTurnIndex] !== myName) return;
