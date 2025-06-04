@@ -1,180 +1,271 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8" />
-<title>オンライン大富豪（8人対応・特殊ルール付き）</title>
-<style>
-  body { font-family: Arial, sans-serif; max-width: 900px; margin: auto; }
-  #handArea img { width: 50px; margin: 2px; cursor: pointer; }
-  #handArea img.selected { border: 2px solid red; }
-  #fieldArea { margin: 10px 0; }
-  #log { height: 120px; overflow-y: auto; background: #eee; padding: 5px; }
-  button { margin: 5px; padding: 10px 15px; }
-</style>
-<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+  <meta charset="UTF-8" />
+  <title>オンライン大富豪（8人対応・特殊ルール付き）</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: auto; }
+    #handArea span { padding: 5px; margin: 2px; border: 1px solid black; cursor: pointer; }
+    #handArea span.selected { background-color: yellow; border: 2px solid red; }
+    #fieldArea { margin: 20px 0; }
+    #fieldArea span { padding: 5px; margin: 2px; border: 1px solid blue; }
+    #log { height: 150px; overflow-y: auto; background: #f0f0f0; padding: 10px; }
+    button { padding: 10px 20px; margin: 5px; }
+    #gameArea { display: none; }
+  </style>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
 </head>
 <body>
+  <h1>オンライン大富豪</h1>
+  <div>
+    <label>プレイヤー名: <input type="text" id="playerName" /></label>
+    <button id="joinBtn">参加</button>
+  </div>
+  <div id="gameArea">
+    <h2>手札</h2>
+    <div id="handArea"></div>
+    <h2>場のカード</h2>
+    <div id="fieldArea"></div>
+    <button id="playButton">出す</button>
+    <button id="passButton">パス</button>
+    <h3>ログ</h3>
+    <div id="log"></div>
+  </div>
 
-<h1>オンライン大富豪</h1>
-
-<div>
-  <label>プレイヤー名: <input type="text" id="playerName" /></label>
-  <button id="joinBtn">参加</button>
-</div>
-
-<div id="gameArea" style="display:none;">
-  <h2>手札</h2>
-  <div id="handArea"></div>
-
-  <h2>場のカード</h2>
-  <div id="fieldArea"></div>
-
-  <button id="playButton">出す</button>
-  <button id="passButton">パス</button>
-
-  <h3>ログ</h3>
-  <div id="log"></div>
-</div>
-
-<script>
-const firebaseConfig = {
-  apiKey: "AIzaSyA0D7fOnIvQFU3O29q6bb_6gj5tWN23N0s",
-  authDomain: "memory-game-10e98.firebaseapp.com",
-  databaseURL: "https://memory-game-10e98-default-rtdb.firebaseio.com",
-  projectId: "memory-game-10e98",
-  storageBucket: "memory-game-10e98.appspot.com",
-  messagingSenderId: "435852264433",
-  appId: "1:435852264433:web:63cdbef6f7742b34b13a50",
-  measurementId: "G-FRDGGQNEZY"
-};
-
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
-
-const rankOrder = ["3","4","5","6","7","8","9","10","J","Q","K","A","2"];
-
-let myName = null;
-let roomId = "room1"; // とりあえず固定。複数ルーム対応は拡張用
-let roomRef = db.ref(`rooms/${roomId}`);
-
-let playerHands = {}; // プレイヤー名 → 手札配列
-let currentFieldCards = [];
-let revolution = false;
-let sevenPassActive = false;
-let turnOrder = [];
-let currentTurnIndex = 0;
-let passedPlayers = [];
-
-let selectedIndices = []; // 手札の選択カードのindex配列
-
-// ----- ユーティリティ -----
-
-function log(text) {
-  const logDiv = document.getElementById("log");
-  logDiv.textContent += text + "\n";
-  logDiv.scrollTop = logDiv.scrollHeight;
-}
-
-function cardToText(card) {
-  return card.rank + card.suit;
-}
-
-// ----- ゲームロジック -----
-
-function getFieldRank(cards) {
-  if (!cards || cards.length === 0) return null;
-  return cards[0].rank;
-}
-
-function rankCompare(rankA, rankB, revolutionFlag = false) {
-  const order = rankOrder;
-  const indexA = order.indexOf(rankA);
-  const indexB = order.indexOf(rankB);
-  if (!revolutionFlag) return indexA - indexB;
-  return indexB - indexA; // 革命時は逆
-}
-
-function canPlayCardsNormal(selectedCards, fieldCards, revolutionFlag) {
-  if (selectedCards.length === 0) return false;
-
-  const firstRank = selectedCards[0].rank;
-  if (!selectedCards.every(card => card.rank === firstRank)) return false;
-
-  if (!fieldCards || fieldCards.length === 0) return true;
-  if (selectedCards.length !== fieldCards.length) return false;
-
-  const fieldRank = getFieldRank(fieldCards);
-  return rankCompare(firstRank, fieldRank, revolutionFlag) > 0;
-}
-
-function canPlayCardsSevenPass(selectedCards) {
-  return selectedCards.length > 0 && selectedCards.every(card => card.rank === "7");
-}
-
-function canPlayCards(selectedCards, fieldCards, room) {
-  if (room.sevenPassActive) {
-    return canPlayCardsSevenPass(selectedCards);
-  }
-  return canPlayCardsNormal(selectedCards, fieldCards, room.revolution);
-}
-
-function checkRevolution(cards) {
-  if (cards.length === 4) {
-    return cards.every(c => c.rank === cards[0].rank);
-  }
-  return false;
-}
-
-function isTwelveBomber(playedCards) {
-  return playedCards.some(card => card.rank === "Q");
-}
-
-// ----- UI 更新 -----
-
-function displayHand() {
-  const handArea = document.getElementById("handArea");
-  handArea.innerHTML = "";
-  if (!playerHands[myName]) return;
-
-  playerHands[myName].forEach((card, idx) => {
-    const span = document.createElement("span");
-    span.textContent = cardToText(card);
-    span.style.border = "1px solid black";
-    span.style.padding = "3px 6px";
-    span.style.margin = "2px";
-    span.style.cursor = "pointer";
-    if (selectedIndices.includes(idx)) {
-      span.style.backgroundColor = "yellow";
-    }
-    span.onclick = () => {
-      if (selectedIndices.includes(idx)) {
-        selectedIndices = selectedIndices.filter(i => i !== idx);
-      } else {
-        selectedIndices.push(idx);
-      }
-      displayHand();
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyA0D7fOnIvQFU3O29q6bb_6gj5tWN23N0s",
+      authDomain: "memory-game-10e98.firebaseapp.com",
+      databaseURL: "https://memory-game-10e98-default-rtdb.firebaseio.com",
+      projectId: "memory-game-10e98",
+      storageBucket: "memory-game-10e98.appspot.com",
+      messagingSenderId: "435852264433",
+      appId: "1:435852264433:web:63cdbef6f7742b34b13a50",
+      measurementId: "G-FRDGGQNEZY"
     };
-    handArea.appendChild(span);
-  });
-}
 
-function displayField(fieldCards) {
-  const fieldArea = document.getElementById("fieldArea");
-  fieldArea.innerHTML = "";
-  if (!fieldCards || fieldCards.length === 0) {
-    fieldArea.textContent = "(場は空)";
-    return;
-  }
-  fieldCards.forEach(card => {
-    const span = document.createElement("span");
-    span.textContent = cardToText(card);
-    span.style.border = "1px solid blue";
-    span.style.padding = "3px 6px";
-    span.style.margin = "2px";
-    fieldArea.appendChild(span);
-  });
-}
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const roomId = "room1";
+    const roomRef = db.ref(`rooms/${roomId}`);
 
-function updateUI(room) {
-  playerHands = room.hands
+    const suits = ["♠", "♣", "♦", "♥"];
+    const rankOrder = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2"];
+    let myName = null;
+    let playerHands = {};
+    let currentFieldCards = [];
+    let revolution = false;
+    let sevenPassActive = false;
+    let turnOrder = [];
+    let currentTurnIndex = 0;
+    let passedPlayers = [];
+    let selectedIndices = [];
+
+    // ユーティリティ
+    function log(text) {
+      const logDiv = document.getElementById("log");
+      logDiv.textContent += `${new Date().toLocaleTimeString()}: ${text}\n`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    function cardToText(card) {
+      return `${card.rank}${card.suit}`;
+    }
+
+    // デッキ生成と配布
+    function createDeck() {
+      const deck = [];
+      for (let suit of suits) {
+        for (let rank of rankOrder) {
+          deck.push({ suit, rank });
+        }
+      }
+      return deck.sort(() => Math.random() - 0.5);
+    }
+
+    function dealCards(players) {
+      const deck = createDeck();
+      const cardsPerPlayer = Math.floor(deck.length / players.length);
+      const hands = {};
+      players.forEach((player, i) => {
+        hands[player] = deck.slice(i * cardsPerPlayer, (i + 1) * cardsPerPlayer);
+      });
+      return hands;
+    }
+
+    // ゲームロジック
+    function getFieldRank(cards) {
+      return cards.length > 0 ? cards[0].rank : null;
+    }
+
+    function rankCompare(rankA, rankB) {
+      const indexA = rankOrder.indexOf(rankA);
+      const indexB = rankOrder.indexOf(rankB);
+      return revolution ? indexB - indexA : indexA - indexB;
+    }
+
+    function canPlayCardsNormal(selectedCards, fieldCards) {
+      if (selectedCards.length === 0) return false;
+      if (!selectedCards.every(card => card.rank === selectedCards[0].rank)) return false;
+      if (fieldCards.length === 0) return true;
+      if (selectedCards.length !== fieldCards.length) return false;
+      return rankCompare(selectedCards[0].rank, getFieldRank(fieldCards)) > 0;
+    }
+
+    function canPlayCardsSevenPass(selectedCards) {
+      return selectedCards.length > 0 && selectedCards.every(card => card.rank === "7");
+    }
+
+    function canPlayCards(selectedCards, fieldCards) {
+      return sevenPassActive ? canPlayCardsSevenPass(selectedCards) : canPlayCardsNormal(selectedCards, fieldCards);
+    }
+
+    function checkRevolution(cards) {
+      return cards.length === 4 && cards.every(c => c.rank === cards[0].rank);
+    }
+
+    function isTwelveBomber(cards) {
+      return cards.some(card => card.rank === "Q");
+    }
+
+    // UI更新
+    function displayHand() {
+      const handArea = document.getElementById("handArea");
+      handArea.innerHTML = "";
+      if (!playerHands[myName]) return;
+      playerHands[myName].forEach((card, idx) => {
+        const span = document.createElement("span");
+        span.textContent = cardToText(card);
+        span.className = selectedIndices.includes(idx) ? "selected" : "";
+        span.onclick = () => {
+          if (selectedIndices.includes(idx)) {
+            selectedIndices = selectedIndices.filter(i => i !== idx);
+          } else {
+            selectedIndices.push(idx);
+          }
+          displayHand();
+        };
+        handArea.appendChild(span);
+      });
+    }
+
+    function displayField(fieldCards) {
+      const fieldArea = document.getElementById("fieldArea");
+      fieldArea.innerHTML = fieldCards.length === 0 ? "(場は空)" : "";
+      fieldCards.forEach(card => {
+        const span = document.createElement("span");
+        span.textContent = cardToText(card);
+        fieldArea.appendChild(span);
+      });
+    }
+
+    function updateUI(room) {
+      playerHands = room.hands || {};
+      currentFieldCards = room.fieldCards || [];
+      revolution = room.revolution || false;
+      sevenPassActive = room.sevenPassActive || false;
+      turnOrder = room.turnOrder || [];
+      currentTurnIndex = room.currentTurnIndex || 0;
+      passedPlayers = room.passedPlayers || [];
+      displayHand();
+      displayField(currentFieldCards);
+      document.getElementById("playButton").disabled = turnOrder[currentTurnIndex] !== myName;
+      document.getElementById("passButton").disabled = turnOrder[currentTurnIndex] !== myName;
+      log(`現在のターン: ${turnOrder[currentTurnIndex] || "なし"}`);
+    }
+
+    // ゲーム操作
+    document.getElementById("joinBtn").onclick = () => {
+      myName = document.getElementById("playerName").value.trim();
+      if (!myName) {
+        alert("プレイヤー名を入力してください");
+        return;
+      }
+      roomRef.child("players").transaction(players => {
+        players = players || [];
+        if (players.length >= 8) return;
+        if (!players.includes(myName)) players.push(myName);
+        return players;
+      }, (error, committed, snapshot) => {
+        if (error || !committed) {
+          alert("参加できませんでした");
+          return;
+        }
+        document.getElementById("gameArea").style.display = "block";
+        document.getElementById("joinBtn").disabled = true;
+        document.getElementById("playerName").disabled = true;
+        log(`${myName} が参加しました`);
+      });
+    };
+
+    document.getElementById("playButton").onclick = () => {
+      if (turnOrder[currentTurnIndex] !== myName) return;
+      const selectedCards = selectedIndices.map(idx => playerHands[myName][idx]);
+      if (!canPlayCards(selectedCards, currentFieldCards)) {
+        alert("出せないカードです");
+        return;
+      }
+      const newHand = playerHands[myName].filter((_, idx) => !selectedIndices.includes(idx));
+      const updates = {
+        [`hands/${myName}`]: newHand,
+        fieldCards: selectedCards,
+        passedPlayers: [],
+        currentTurnIndex: (currentTurnIndex + 1) % turnOrder.length
+      };
+      if (checkRevolution(selectedCards)) {
+        updates.revolution = !revolution;
+        log("革命が発生！");
+      }
+      if (isTwelveBomber(selectedCards)) {
+        updates.sevenPassActive = true;
+        log("12ボンバー！7パスが有効になりました");
+      }
+      if (newHand.length === 0) {
+        log(`${myName} が上がりました！`);
+      }
+      roomRef.update(updates);
+      selectedIndices = [];
+    };
+
+    document.getElementById("passButton").onclick = () => {
+      if (turnOrder[currentTurnIndex] !== myName) return;
+      const newPassedPlayers = [...passedPlayers, myName];
+      const updates = {
+        passedPlayers: newPassedPlayers,
+        currentTurnIndex: (currentTurnIndex + 1) % turnOrder.length
+      };
+      if (newPassedPlayers.length === turnOrder.length - 1) {
+        updates.fieldCards = [];
+        updates.passedPlayers = [];
+        updates.sevenPassActive = false;
+        log("場がリセットされました");
+      }
+      roomRef.update(updates);
+      log(`${myName} がパスしました`);
+    };
+
+    // Firebaseリスナー
+    roomRef.child("players").on("value", snapshot => {
+      const players = snapshot.val() || [];
+      if (players.length > 0 && !turnOrder.length) {
+        roomRef.update({
+          hands: dealCards(players),
+          turnOrder: players,
+          currentTurnIndex: 0,
+          fieldCards: [],
+          revolution: false,
+          sevenPassActive: false,
+          passedPlayers: []
+        });
+        log("ゲーム開始！カードを配りました");
+      }
+    });
+
+    roomRef.on("value", snapshot => {
+      const room = snapshot.val() || {};
+      updateUI(room);
+    });
+  </script>
+</body>
+</html>
