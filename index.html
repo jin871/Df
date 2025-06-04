@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>オンライン大富豪（8人対応・特殊ルール付き）</title>
+  <title>オンライン大富豪（8人対応・特殊ルール付き・コンピュータ対戦）</title>
   <style>
     body { font-family: Arial, sans-serif; max-width: 900px; margin: auto; }
     #handArea span { padding: 5px; margin: 2px; border: 1px solid black; cursor: pointer; }
@@ -13,13 +13,25 @@
     button { padding: 10px 20px; margin: 5px; }
     #gameArea { display: none; }
   </style>
-  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script
+
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
 </head>
 <body>
   <h1>オンライン大富豪</h1>
   <div>
     <label>プレイヤー名: <input type="text" id="playerName" /></label>
+    <label>コンピュータ数: 
+      <select id="botCount">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+        <option value="7">7</option>
+      </select>
+    </label>
     <button id="joinBtn">参加</button>
   </div>
   <div id="gameArea">
@@ -61,6 +73,7 @@
     let currentTurnIndex = 0;
     let passedPlayers = [];
     let selectedIndices = [];
+    let botNames = [];
 
     // ユーティリティ
     function log(text) {
@@ -129,6 +142,94 @@
       return cards.some(card => card.rank === "Q");
     }
 
+    // コンピュータの行動ロジック
+    function botPlay(playerName) {
+      if (!playerHands[playerName] || playerHands[playerName].length === 0) return;
+      const hand = playerHands[playerName];
+      let validCards = [];
+
+      // 7パスが有効な場合
+      if (sevenPassActive) {
+        validCards = hand.filter(card => card.rank === "7");
+        if (validCards.length > 0) {
+          validCards = [validCards[Math.floor(Math.random() * validCards.length)]];
+        }
+      } else {
+        // 通常時: 場のカードと同じ枚数の有効なカードを探す
+        const fieldCount = currentFieldCards.length || 1;
+        const groupedByRank = {};
+        hand.forEach(card => {
+          groupedByRank[card.rank] = groupedByRank[card.rank] || [];
+          groupedByRank[card.rank].push(card);
+        });
+        for (let rank in groupedByRank) {
+          if (groupedByRank[rank].length >= fieldCount) {
+            if (currentFieldCards.length === 0 || rankCompare(rank, getFieldRank(currentFieldCards)) > 0) {
+              validCards = groupedByRank[rank].slice(0, fieldCount);
+              break;
+            }
+          }
+        }
+      }
+
+      // 50%の確率でパス
+      if (Math.random() < 0.5 && currentFieldCards.length > 0) {
+        log(`${playerName} がパスしました`);
+        const newPassedPlayers = [...passedPlayers, playerName];
+        const updates = {
+          passedPlayers: newPassedPlayers,
+          currentTurnIndex: (currentTurnIndex + 1) % turnOrder.length
+        };
+        if (newPassedPlayers.length === turnOrder.length - 1) {
+          updates.fieldCards = [];
+          updates.passedPlayers = [];
+          updates.sevenPassActive = false;
+          log("場がリセットされました");
+        }
+        roomRef.update(updates);
+        return;
+      }
+
+      // 有効なカードがある場合
+      if (validCards.length > 0) {
+        const newHand = hand.filter(card => !validCards.includes(card));
+        const updates = {
+          [`hands/${playerName}`]: newHand,
+          fieldCards: validCards,
+          passedPlayers: [],
+          currentTurnIndex: (currentTurnIndex + 1) % turnOrder.length
+        };
+        if (checkRevolution(validCards)) {
+          updates.revolution = !revolution;
+          log("革命が発生！");
+        }
+        if (isTwelveBomber(validCards)) {
+          updates.sevenPassActive = true;
+          log("12ボンバー！7パスが有効になりました");
+        }
+        if (newHand.length === 0) {
+          log(`${playerName} が上がりました！`);
+        }
+        roomRef.update(updates);
+        log(`${playerName} が ${validCards.map(cardToText).join(", ")} を出しました`);
+      } else {
+        // 出せない場合パス
+        log(`${playerName} がパスしました`);
+        const newPassedPlayers = [...passedPlayers, playerName];
+        const updates = {
+          passedPlayers: newPassedPlayers,
+          currentTurnIndex: (currentTurnIndex + 1) % turnOrder.length
+        };
+        if (newPassedPlayers.length === turnOrder.length - 1) {
+          updates.fieldCards = [];
+          updates.passedPlayers = [];
+          updates.sevenPassActive = false;
+          log("場がリセットされました");
+        }
+        roomRef.update(updates);
+      }
+    }
+
     // UI更新
     function displayHand() {
       const handArea = document.getElementById("handArea");
@@ -173,6 +274,11 @@
       document.getElementById("playButton").disabled = turnOrder[currentTurnIndex] !== myName;
       document.getElementById("passButton").disabled = turnOrder[currentTurnIndex] !== myName;
       log(`現在のターン: ${turnOrder[currentTurnIndex] || "なし"}`);
+
+      // ボットのターンなら自動で行動
+      if (turnOrder[currentTurnIndex] && botNames.includes(turnOrder[currentTurnIndex])) {
+        setTimeout(() => botPlay(turnOrder[currentTurnIndex]), 1000); // 1秒遅延で自然な動作
+      }
     }
 
     // ゲーム操作
@@ -182,10 +288,13 @@
         alert("プレイヤー名を入力してください");
         return;
       }
-      roomRef.child("players").transaction(players => {
-        players = players || [];
-        if (players.length >= 8) return;
-        if (!players.includes(myName)) players.push(myName);
+      const botCount = parseInt(document.getElementById("botCount").value);
+      botNames = Array.from({ length: botCount }, (_, i) => `Bot${i + 1}`);
+      const players = [myName, ...botNames];
+
+      roomRef.child("players").transaction(currentPlayers => {
+        currentPlayers = currentPlayers || [];
+        if (currentPlayers.length > 0) return; // すでにゲーム開始済みなら追加しない
         return players;
       }, (error, committed, snapshot) => {
         if (error || !committed) {
@@ -195,7 +304,8 @@
         document.getElementById("gameArea").style.display = "block";
         document.getElementById("joinBtn").disabled = true;
         document.getElementById("playerName").disabled = true;
-        log(`${myName} が参加しました`);
+        document.getElementById("botCount").disabled = true;
+        log(`${myName} と ${botNames.join(", ")} が参加しました`);
       });
     };
 
